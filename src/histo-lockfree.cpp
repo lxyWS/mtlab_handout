@@ -2,15 +2,16 @@
 #include <stdlib.h>
 #include <cstring>
 #include <cassert>
-#include "Timer.h"
+#include <atomic>
 #include <pthread.h>
+#include "Timer.h"
 
 extern "C"
 {
 #include "ppmb_io.h"
 }
 
-int g_thread_num; // global thread count
+int g_thread_num;
 
 struct img
 {
@@ -31,24 +32,24 @@ void print_histogram(FILE *f, int *hist, int N)
     }
 }
 
+// thread_histo 函数的参数
 struct ThreadArg
 {
     img *input;
-    int *local_r; // 记录该线程内的数据
-    int *local_g;
-    int *local_b;
-    int start, end; // 起始索引和终止索引
+    std::atomic<int> *atomic_r; // 需要原子加法，保证不会出现错误
+    std::atomic<int> *atomic_g;
+    std::atomic<int> *atomic_b;
+    int start, end;
 };
 
-// 单个线程计算直方图
 void *thread_histo(void *arg)
 {
     ThreadArg *t = (ThreadArg *)arg;
     for (int i = t->start; i < t->end; ++i)
     {
-        t->local_r[t->input->r[i]]++;
-        t->local_g[t->input->g[i]]++;
-        t->local_b[t->input->b[i]]++;
+        ++t->atomic_r[t->input->r[i]];
+        ++t->atomic_g[t->input->g[i]];
+        ++t->atomic_b[t->input->b[i]];
     }
 
     return nullptr;
@@ -57,17 +58,21 @@ void *thread_histo(void *arg)
 void histogram(struct img *input, int *hist_r, int *hist_g, int *hist_b)
 {
     // we assume hist_r, hist_g, hist_b are zeroed on entry.
-    int length = input->xsize * input->ysize; // 总长度
-    int each_len = length / g_thread_num;     // 每个线程的长度
-    int maxrgb = input->maxrgb;               // rgb最大值
+    int length = input->xsize * input->ysize;
+    int each_len = length / g_thread_num;
+    int maxrgb = input->maxrgb;
+
+    std::atomic<int> *atomic_r = reinterpret_cast<std::atomic<int> *>(hist_r);
+    std::atomic<int> *atomic_g = reinterpret_cast<std::atomic<int> *>(hist_g);
+    std::atomic<int> *atomic_b = reinterpret_cast<std::atomic<int> *>(hist_b);
 
     if (g_thread_num == 1)
     {
         for (int pix = 0; pix < length; pix++)
         {
-            hist_r[input->r[pix]] += 1;
-            hist_g[input->g[pix]] += 1;
-            hist_b[input->b[pix]] += 1;
+            atomic_r[input->r[pix]] += 1;
+            atomic_g[input->g[pix]] += 1;
+            atomic_b[input->b[pix]] += 1;
         }
 
         return;
@@ -76,15 +81,15 @@ void histogram(struct img *input, int *hist_r, int *hist_g, int *hist_b)
     pthread_t *threads = new pthread_t[g_thread_num];
     ThreadArg *args = new ThreadArg[g_thread_num];
 
-    // 设置每个线程的参数
+    // 设置参数
     for (int i = 0; i < g_thread_num; ++i)
     {
         args[i].input = input;
         args[i].start = i * each_len;
         args[i].end = (i == g_thread_num - 1) ? length : (i + 1) * each_len;
-        args[i].local_r = (int *)calloc(maxrgb + 1, sizeof(int));
-        args[i].local_g = (int *)calloc(maxrgb + 1, sizeof(int));
-        args[i].local_b = (int *)calloc(maxrgb + 1, sizeof(int));
+        args[i].atomic_r = atomic_r; // 原子加法时，无需分配私有空间，直接在公共空间上做修改
+        args[i].atomic_g = atomic_g;
+        args[i].atomic_b = atomic_b;
     }
 
     for (int i = 0; i < g_thread_num; ++i)
@@ -92,21 +97,10 @@ void histogram(struct img *input, int *hist_r, int *hist_g, int *hist_b)
         pthread_create(&threads[i], nullptr, thread_histo, &args[i]);
     }
 
-    // 合并各个线程的直方图
+    // 直接回收，无需合并
     for (int i = 0; i < g_thread_num; ++i)
     {
         pthread_join(threads[i], nullptr);
-        for (int j = 0; j <= input->maxrgb; ++j)
-        {
-            hist_r[j] += args[i].local_r[j];
-            hist_g[j] += args[i].local_g[j];
-            hist_b[j] += args[i].local_b[j];
-        }
-
-        // 释放分配的空间
-        free(args[i].local_r);
-        free(args[i].local_g);
-        free(args[i].local_b);
     }
 
     delete[] threads;
@@ -126,7 +120,7 @@ int main(int argc, char *argv[])
     char *input_file = argv[1];
     int threads = atoi(argv[3]);
 
-    g_thread_num = threads; // set g_thread_num
+    g_thread_num = threads;
 
     /* remove this in multithreaded version */
     // if(threads != 1) {
