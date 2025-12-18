@@ -117,12 +117,12 @@ void histogram(struct img *input, int *hist_r, int *hist_g, int *hist_b)
     }
 
     // 为rgb的每个取值分别设置自己的锁
-    Tas_lock *locks_r = (Tas_lock *)malloc(256 * sizeof(Tas_lock));
-    Tas_lock *locks_g = (Tas_lock *)malloc(256 * sizeof(Tas_lock));
-    Tas_lock *locks_b = (Tas_lock *)malloc(256 * sizeof(Tas_lock));
+    Tas_lock *locks_r = (Tas_lock *)malloc((maxrgb + 1) * sizeof(Tas_lock));
+    Tas_lock *locks_g = (Tas_lock *)malloc((maxrgb + 1) * sizeof(Tas_lock));
+    Tas_lock *locks_b = (Tas_lock *)malloc((maxrgb + 1) * sizeof(Tas_lock));
 
     // 为所有锁初始化
-    for (int i = 0; i < 256; ++i)
+    for (int i = 0; i <= maxrgb; ++i)
     {
         init_lock(&locks_r[i]);
         init_lock(&locks_g[i]);
